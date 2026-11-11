@@ -42,10 +42,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run TypeScript validation
+      - name: TypeScript validation
         run: npx tsc -b
 
-      - name: Build Vite production application
+      - name: Build production frontend
         run: npm run build
 
       - name: Verify production build
@@ -54,6 +54,8 @@ jobs:
             echo "::error::Production index.html missing"
             exit 1
           fi
+
+          echo "Production build verified."
 
       - name: Upload production artifact
         uses: actions/upload-artifact@v4
@@ -72,12 +74,9 @@ jobs:
     needs: build
 
     runs-on: [self-hosted, Windows, X64, iis-deploy]
-
     timeout-minutes: 30
 
     steps:
-
-      # Download production build
 
       - name: Download production artifact
         uses: actions/download-artifact@v4
@@ -85,9 +84,9 @@ jobs:
           name: djtrust-frontend
           path: ${{ runner.temp }}\djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # ==========================================
+      # ======================================
       # BACKUP AND DEPLOY
-      # ==========================================
+      # ======================================
 
       - name: Backup and deploy Frontend
         shell: powershell
@@ -113,53 +112,73 @@ jobs:
 
           $backupPath = Join-Path $backupRoot "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
 
-          $webConfigPath = Join-Path $destination "web.config"
-
-          $ErrorActionPreference = "Stop"
 
           # ==================================
-          # VALIDATE SOURCE
+          # ROBOCOPY HELPER
+          # ==================================
+
+          function Invoke-Robocopy {
+              param(
+                  [string[]]$Arguments,
+                  [string]$Operation
+              )
+
+              & robocopy @Arguments
+
+              $code = $LASTEXITCODE
+
+              if ($code -ge 8) {
+                  throw "$Operation failed. Robocopy exit code: $code"
+              }
+
+              Write-Host "$Operation completed. Robocopy exit code: $code"
+          }
+
+
+          # ==================================
+          # VALIDATE
           # ==================================
 
           Write-Host "Checking production build..."
 
           if (!(Test-Path "$source\index.html")) {
-              throw "Production index.html not found"
+              throw "Production index.html missing"
           }
 
-          # ==================================
-          # VALIDATE DESTINATION
-          # ==================================
-
           if (!(Test-Path $destination -PathType Container)) {
-              throw "IIS Frontend directory not found"
+              throw "IIS Frontend directory missing"
           }
 
           if (!(Test-Path "$destination\index.html")) {
-              throw "Existing website index.html missing"
+              throw "Existing production index.html missing"
           }
 
-          if (!(Test-Path $webConfigPath)) {
+          if (!(Test-Path "$destination\web.config")) {
               throw "Existing IIS web.config missing"
           }
+
 
           # ==================================
           # CREATE BACKUP
           # ==================================
 
-          Write-Host "Creating website backup..."
+          Write-Host "Creating production backup..."
 
           New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
 
           New-Item -ItemType Directory -Force -Path $backupPath | Out-Null
 
-          & robocopy $destination $backupPath /E /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
-
-          $backupCode = $LASTEXITCODE
-
-          if ($backupCode -ge 8) {
-              throw "Backup failed. Robocopy code: $backupCode"
-          }
+          Invoke-Robocopy -Arguments @(
+              $destination,
+              $backupPath,
+              "/E",
+              "/R:2",
+              "/W:3",
+              "/COPY:DAT",
+              "/DCOPY:DAT",
+              "/XJ",
+              "/NP"
+          ) -Operation "Backup"
 
           if (!(Test-Path "$backupPath\index.html") -or
               !(Test-Path "$backupPath\web.config")) {
@@ -168,49 +187,49 @@ jobs:
 
           $backupIndexHash = (Get-FileHash "$backupPath\index.html" -Algorithm SHA256).Hash
 
-          $backupWebConfigHash = (Get-FileHash "$backupPath\web.config" -Algorithm SHA256).Hash
+          $backupConfigHash = (Get-FileHash "$backupPath\web.config" -Algorithm SHA256).Hash
 
-          $webConfigHashBefore = (Get-FileHash $webConfigPath -Algorithm SHA256).Hash
+          Write-Host "Backup verified: $backupPath"
 
-          if ($backupWebConfigHash -ne $webConfigHashBefore) {
-              throw "Backup web.config does not match production web.config"
-          }
-
-          Write-Host "Backup completed: $backupPath"
 
           # ==================================
           # DEPLOYMENT
           # ==================================
 
-          $deploymentStarted = $false
-
           try {
 
-              Write-Host "Deploying new React application..."
+              Write-Host "Deploying React frontend..."
 
-              $deploymentStarted = $true
+              # Do not overwrite or delete IIS web.config.
+              # Do not mirror-delete existing uploads or media.
 
-              # Do not mirror or delete existing server files.
-              # Preserve web.config and server-managed media.
+              Invoke-Robocopy -Arguments @(
+                  $source,
+                  $destination,
+                  "/E",
+                  "/XF",
+                  "web.config",
+                  "/R:2",
+                  "/W:3",
+                  "/COPY:DAT",
+                  "/DCOPY:DAT",
+                  "/XJ",
+                  "/NP"
+              ) -Operation "Frontend deployment"
 
-              & robocopy $source $destination /E /XF web.config /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
-
-              $deployCode = $LASTEXITCODE
-
-              if ($deployCode -ge 8) {
-                  throw "Robocopy deployment failed: $deployCode"
-              }
 
               # ==================================
               # VERIFY DEPLOYMENT
               # ==================================
 
+              Write-Host "Verifying deployment..."
+
               if (!(Test-Path "$destination\index.html")) {
-                  throw "Deployment verification failed: index.html missing"
+                  throw "Deployment failed: index.html missing"
               }
 
-              if (!(Test-Path $webConfigPath)) {
-                  throw "Deployment verification failed: web.config missing"
+              if (!(Test-Path "$destination\web.config")) {
+                  throw "Deployment failed: web.config missing"
               }
 
               $sourceHash = (Get-FileHash "$source\index.html" -Algorithm SHA256).Hash
@@ -218,75 +237,85 @@ jobs:
               $destinationHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
 
               if ($sourceHash -ne $destinationHash) {
-                  throw "Deployment verification failed: index.html mismatch"
+                  throw "Deployment failed: index.html hash mismatch"
               }
 
-              $webConfigHashAfter = (Get-FileHash $webConfigPath -Algorithm SHA256).Hash
+              $configHashAfter = (Get-FileHash "$destination\web.config" -Algorithm SHA256).Hash
 
-              if ($webConfigHashBefore -ne $webConfigHashAfter) {
-                  throw "Existing web.config was unexpectedly modified"
+              if ($backupConfigHash -ne $configHashAfter) {
+                  throw "IIS web.config was unexpectedly modified"
               }
+
 
               # ==================================
               # SUCCESS
               # ==================================
 
-              Write-Host "=================================="
+              Write-Host ""
+              Write-Host "===================================="
               Write-Host "DJTRUST DEPLOYMENT SUCCESSFUL"
-              Write-Host "=================================="
+              Write-Host "===================================="
 
               Write-Host "Commit: $env:GITHUB_COMMIT"
               Write-Host "Destination: $destination"
               Write-Host "Backup: $backupPath"
 
           }
+
           catch {
 
               $deploymentError = $_.Exception.Message
 
               Write-Warning "Deployment failed: $deploymentError"
 
-              if ($deploymentStarted) {
+              Write-Warning "Starting automatic rollback..."
 
-                  Write-Warning "Restoring previous website..."
+              # Restore previous website.
+              # Exclude web.config from overwrite because it must be preserved.
 
-                  # Restore previous files without deleting
-                  # the existing web.config.
+              Invoke-Robocopy -Arguments @(
+                  $backupPath,
+                  $destination,
+                  "/E",
+                  "/PURGE",
+                  "/XF",
+                  "web.config",
+                  "/R:2",
+                  "/W:3",
+                  "/COPY:DAT",
+                  "/DCOPY:DAT",
+                  "/XJ",
+                  "/NP"
+              ) -Operation "Rollback"
 
-                  & robocopy $backupPath $destination /E /XF web.config /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
+              # Verify restored website.
 
-                  $rollbackCode = $LASTEXITCODE
-
-                  if ($rollbackCode -ge 8) {
-                      throw "CRITICAL: Rollback failed. Manual recovery required. Backup: $backupPath"
-                  }
-
-                  if (!(Test-Path "$destination\index.html") -or
-                      !(Test-Path $webConfigPath)) {
-                      throw "CRITICAL: Rollback verification failed. Backup: $backupPath"
-                  }
-
-                  $restoredHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
-
-                  $restoredConfigHash = (Get-FileHash $webConfigPath -Algorithm SHA256).Hash
-
-                  if ($restoredHash -ne $backupIndexHash) {
-                      throw "CRITICAL: Restored website does not match backup"
-                  }
-
-                  if ($restoredConfigHash -ne $backupWebConfigHash) {
-                      throw "CRITICAL: Restored web.config does not match backup"
-                  }
-
-                  Write-Warning "Previous website successfully restored."
+              if (!(Test-Path "$destination\index.html") -or
+                  !(Test-Path "$destination\web.config")) {
+                  throw "CRITICAL: Rollback verification failed. Backup: $backupPath"
               }
 
-              throw "Deployment failed. Previous website restored or deployment was not started. Error: $deploymentError"
+              $restoredIndexHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
+
+              $restoredConfigHash = (Get-FileHash "$destination\web.config" -Algorithm SHA256).Hash
+
+              if ($restoredIndexHash -ne $backupIndexHash) {
+                  throw "CRITICAL: Restored index.html does not match backup"
+              }
+
+              if ($restoredConfigHash -ne $backupConfigHash) {
+                  throw "CRITICAL: Restored web.config does not match backup"
+              }
+
+              Write-Warning "Previous website successfully restored."
+
+              throw "Deployment failed. Previous website restored. Error: $deploymentError"
           }
 
-      # ==========================================
-      # CLEANUP TEMPORARY FILES
-      # ==========================================
+
+      # ======================================
+      # CLEANUP
+      # ======================================
 
       - name: Cleanup temporary files
         if: always()
@@ -297,6 +326,9 @@ jobs:
           $tempPath = Join-Path $env:RUNNER_TEMP "djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}"
 
           if (Test-Path $tempPath) {
+
               Remove-Item $tempPath -Recurse -Force
-              Write-Host "Temporary deployment files cleaned."
+
+              Write-Host "Temporary files cleaned successfully."
+
           }
