@@ -135,7 +135,11 @@ jobs:
                   throw "$Operation failed. Robocopy exit code: $code"
               }
 
-              Write-Host "$Operation completed. Robocopy exit code: $code"
+              # Reset $LASTEXITCODE to 0 since Robocopy codes 0-7 indicate success / non-fatal status
+              # (e.g. 1 means files copied successfully, 0 means no files changed).
+              $global:LASTEXITCODE = 0
+
+              Write-Host "$Operation completed successfully. Robocopy exit code: $code"
           }
 
 
@@ -263,6 +267,9 @@ jobs:
               Write-Host "Commit: $env:GITHUB_COMMIT"
               Write-Host "Destination: $destination"
               Write-Host "Backup: $backupPath"
+
+              $global:LASTEXITCODE = 0
+              exit 0
 
           }
 
