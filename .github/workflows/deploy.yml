@@ -1,3 +1,4 @@
+
 name: DJTrust Website - Production Deployment
 
 on:
@@ -8,21 +9,19 @@ on:
 permissions:
   contents: read
 
-# Prevent simultaneous production deployments
 concurrency:
   group: djtrust-production
   cancel-in-progress: false
 
 jobs:
+
   # ==========================================
   # JOB 1 - BUILD REACT FRONTEND
   # ==========================================
 
   build:
     name: Build React Frontend
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 20
 
     defaults:
@@ -50,14 +49,11 @@ jobs:
         run: npm run build
 
       - name: Verify production build
-        working-directory: Frontend
         run: |
           if [ ! -f "dist/index.html" ]; then
-            echo "Production build failed: index.html missing"
+            echo "::error::Production index.html missing"
             exit 1
           fi
-
-          echo "Production build verified successfully."
 
       - name: Upload production artifact
         uses: actions/upload-artifact@v4
@@ -73,7 +69,6 @@ jobs:
 
   deploy:
     name: Deploy to CloudCone IIS
-
     needs: build
 
     runs-on: [self-hosted, Windows, X64, iis-deploy]
@@ -81,14 +76,19 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # Download the production build
+
+      # Download production build
+
       - name: Download production artifact
         uses: actions/download-artifact@v4
         with:
           name: djtrust-frontend
           path: ${{ runner.temp }}\djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # Backup and deploy
+      # ==========================================
+      # BACKUP AND DEPLOY
+      # ==========================================
+
       - name: Backup and deploy Frontend
         shell: powershell
 
@@ -113,6 +113,9 @@ jobs:
 
           $backupPath = Join-Path $backupRoot "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
 
+          $webConfigPath = Join-Path $destination "web.config"
+
+          $ErrorActionPreference = "Stop"
 
           # ==================================
           # VALIDATE SOURCE
@@ -123,7 +126,6 @@ jobs:
           if (!(Test-Path "$source\index.html")) {
               throw "Production index.html not found"
           }
-
 
           # ==================================
           # VALIDATE DESTINATION
@@ -137,10 +139,9 @@ jobs:
               throw "Existing website index.html missing"
           }
 
-          if (!(Test-Path "$destination\web.config")) {
+          if (!(Test-Path $webConfigPath)) {
               throw "Existing IIS web.config missing"
           }
-
 
           # ==================================
           # CREATE BACKUP
@@ -157,7 +158,7 @@ jobs:
           $backupCode = $LASTEXITCODE
 
           if ($backupCode -ge 8) {
-              throw "Backup failed. Deployment cancelled. Robocopy code: $backupCode"
+              throw "Backup failed. Robocopy code: $backupCode"
           }
 
           if (!(Test-Path "$backupPath\index.html") -or
@@ -167,35 +168,38 @@ jobs:
 
           $backupIndexHash = (Get-FileHash "$backupPath\index.html" -Algorithm SHA256).Hash
 
+          $backupWebConfigHash = (Get-FileHash "$backupPath\web.config" -Algorithm SHA256).Hash
+
+          $webConfigHashBefore = (Get-FileHash $webConfigPath -Algorithm SHA256).Hash
+
+          if ($backupWebConfigHash -ne $webConfigHashBefore) {
+              throw "Backup web.config does not match production web.config"
+          }
+
           Write-Host "Backup completed: $backupPath"
 
-
           # ==================================
-          # PRESERVE IIS CONFIGURATION
+          # DEPLOYMENT
           # ==================================
 
-          $webConfigHashBefore = (
-              Get-FileHash "$destination\web.config" -Algorithm SHA256
-          ).Hash
-
-
-          # ==================================
-          # DEPLOY NEW FRONTEND
-          # ==================================
+          $deploymentStarted = $false
 
           try {
 
               Write-Host "Deploying new React application..."
 
-              # Never overwrite or delete the existing web.config
-              & robocopy $source $destination /MIR /XF web.config /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
+              $deploymentStarted = $true
+
+              # Do not mirror or delete existing server files.
+              # Preserve web.config and server-managed media.
+
+              & robocopy $source $destination /E /XF web.config /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
 
               $deployCode = $LASTEXITCODE
 
               if ($deployCode -ge 8) {
                   throw "Robocopy deployment failed: $deployCode"
               }
-
 
               # ==================================
               # VERIFY DEPLOYMENT
@@ -205,30 +209,23 @@ jobs:
                   throw "Deployment verification failed: index.html missing"
               }
 
-              if (!(Test-Path "$destination\web.config")) {
+              if (!(Test-Path $webConfigPath)) {
                   throw "Deployment verification failed: web.config missing"
               }
 
-              $sourceHash = (
-                  Get-FileHash "$source\index.html" -Algorithm SHA256
-              ).Hash
+              $sourceHash = (Get-FileHash "$source\index.html" -Algorithm SHA256).Hash
 
-              $destinationHash = (
-                  Get-FileHash "$destination\index.html" -Algorithm SHA256
-              ).Hash
+              $destinationHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
 
               if ($sourceHash -ne $destinationHash) {
                   throw "Deployment verification failed: index.html mismatch"
               }
 
-              $webConfigHashAfter = (
-                  Get-FileHash "$destination\web.config" -Algorithm SHA256
-              ).Hash
+              $webConfigHashAfter = (Get-FileHash $webConfigPath -Algorithm SHA256).Hash
 
               if ($webConfigHashBefore -ne $webConfigHashAfter) {
                   throw "Existing web.config was unexpectedly modified"
               }
-
 
               # ==================================
               # SUCCESS
@@ -243,50 +240,58 @@ jobs:
               Write-Host "Backup: $backupPath"
 
           }
-
           catch {
 
               $deploymentError = $_.Exception.Message
 
               Write-Warning "Deployment failed: $deploymentError"
 
-              Write-Warning "Restoring previous website..."
+              if ($deploymentStarted) {
 
+                  Write-Warning "Restoring previous website..."
 
-              # ==================================
-              # AUTOMATIC ROLLBACK
-              # ==================================
+                  # Restore previous files without deleting
+                  # the existing web.config.
 
-              & robocopy $backupPath $destination /MIR /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
+                  & robocopy $backupPath $destination /E /XF web.config /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
 
-              $rollbackCode = $LASTEXITCODE
+                  $rollbackCode = $LASTEXITCODE
 
-              if ($rollbackCode -ge 8) {
-                  throw "CRITICAL: Rollback failed. Manual recovery required. Backup: $backupPath"
+                  if ($rollbackCode -ge 8) {
+                      throw "CRITICAL: Rollback failed. Manual recovery required. Backup: $backupPath"
+                  }
+
+                  if (!(Test-Path "$destination\index.html") -or
+                      !(Test-Path $webConfigPath)) {
+                      throw "CRITICAL: Rollback verification failed. Backup: $backupPath"
+                  }
+
+                  $restoredHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
+
+                  $restoredConfigHash = (Get-FileHash $webConfigPath -Algorithm SHA256).Hash
+
+                  if ($restoredHash -ne $backupIndexHash) {
+                      throw "CRITICAL: Restored website does not match backup"
+                  }
+
+                  if ($restoredConfigHash -ne $backupWebConfigHash) {
+                      throw "CRITICAL: Restored web.config does not match backup"
+                  }
+
+                  Write-Warning "Previous website successfully restored."
               }
 
-              if (!(Test-Path "$destination\index.html") -or
-                  !(Test-Path "$destination\web.config")) {
-                  throw "CRITICAL: Rollback verification failed. Backup: $backupPath"
-              }
-
-              $restoredHash = (
-                  Get-FileHash "$destination\index.html" -Algorithm SHA256
-              ).Hash
-
-              if ($restoredHash -ne $backupIndexHash) {
-                  throw "CRITICAL: Restored website does not match backup"
-              }
-
-              Write-Warning "Previous website successfully restored."
-
-              throw "Deployment failed. Previous website restored. Error: $deploymentError"
+              throw "Deployment failed. Previous website restored or deployment was not started. Error: $deploymentError"
           }
 
-      # Cleanup temporary downloaded artifact
+      # ==========================================
+      # CLEANUP TEMPORARY FILES
+      # ==========================================
+
       - name: Cleanup temporary files
         if: always()
         shell: powershell
+
         run: |
 
           $tempPath = Join-Path $env:RUNNER_TEMP "djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}"
