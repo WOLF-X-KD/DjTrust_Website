@@ -41,7 +41,7 @@ The application is built using **React, TypeScript, ASP.NET Core Web API, and Mi
 - Plantation portfolio covering tea, rubber, cinnamon, and coconut.
 - Company expertise and business development information.
 
-### 4. News, Events & Media Gallery
+### 4. Events & Media Gallery
 - Database-driven news and company event management.
 - Branch opening ceremonies and corporate announcements.
 - Dynamic event information.

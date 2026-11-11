@@ -1,0 +1,306 @@
+
+name: DJTrust Website - Production Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Prevent simultaneous production deployments
+concurrency:
+  group: djtrust-production
+  cancel-in-progress: false
+
+jobs:
+
+  # ==========================================
+  # JOB 1 - BUILD REACT FRONTEND
+  # ==========================================
+
+  build:
+
+    name: Build React Frontend
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: Frontend
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript validation
+        run: npx tsc -b
+
+      - name: Build Vite production application
+        run: npm run build
+
+      - name: Verify production build
+        working-directory: Frontend
+        run: |
+          if [ ! -f "dist/index.html" ]; then
+            echo "Production build failed: index.html missing"
+            exit 1
+          fi
+
+          echo "Production build verified successfully."
+
+      - name: Upload production artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: djtrust-frontend
+          path: Frontend/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+
+  # ==========================================
+  # JOB 2 - DEPLOY TO CLOUDCONE IIS
+  # ==========================================
+
+  deploy:
+
+    name: Deploy to CloudCone IIS
+
+    needs: build
+
+    runs-on: [self-hosted, Windows, X64, iis-deploy]
+
+    timeout-minutes: 30
+
+    steps:
+
+      # Download the production build
+      - name: Download production artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: djtrust-frontend
+          path: ${{ runner.temp }}\djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}
+
+
+      # Backup and deploy
+      - name: Backup and deploy Frontend
+        shell: pwsh
+
+        env:
+          GITHUB_COMMIT: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          # ==================================
+          # CONFIGURATION
+          # ==================================
+
+          $source = Join-Path $env:RUNNER_TEMP "djtrust-production-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+
+          $destination = "C:\inetpub\wwwroot\DJTrustwebsit\Frontend"
+
+          $backupRoot = "C:\Users\Administrator\Documents\website backup"
+
+          $backupPath = Join-Path $backupRoot "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+
+
+          # ==================================
+          # VALIDATE SOURCE
+          # ==================================
+
+          Write-Host "Checking production build..."
+
+          if (!(Test-Path "$source\index.html")) {
+              throw "Production index.html not found"
+          }
+
+
+          # ==================================
+          # VALIDATE DESTINATION
+          # ==================================
+
+          if (!(Test-Path $destination -PathType Container)) {
+              throw "IIS Frontend directory not found"
+          }
+
+          if (!(Test-Path "$destination\index.html")) {
+              throw "Existing website index.html missing"
+          }
+
+          if (!(Test-Path "$destination\web.config")) {
+              throw "Existing IIS web.config missing"
+          }
+
+
+          # ==================================
+          # CREATE BACKUP
+          # ==================================
+
+          Write-Host "Creating website backup..."
+
+          New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+
+          New-Item -ItemType Directory -Force -Path $backupPath | Out-Null
+
+          & robocopy $destination $backupPath /E /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
+
+          $backupCode = $LASTEXITCODE
+
+          if ($backupCode -ge 8) {
+              throw "Backup failed. Deployment cancelled. Robocopy code: $backupCode"
+          }
+
+          if (!(Test-Path "$backupPath\index.html") -or
+              !(Test-Path "$backupPath\web.config")) {
+              throw "Backup verification failed"
+          }
+
+          $backupIndexHash = (Get-FileHash "$backupPath\index.html" -Algorithm SHA256).Hash
+
+          Write-Host "Backup completed: $backupPath"
+
+
+          # ==================================
+          # PRESERVE IIS CONFIGURATION
+          # ==================================
+
+          $webConfigHashBefore = (
+              Get-FileHash "$destination\web.config" -Algorithm SHA256
+          ).Hash
+
+
+          # ==================================
+          # DEPLOY NEW FRONTEND
+          # ==================================
+
+          try {
+
+              Write-Host "Deploying new React application..."
+
+              # Never overwrite or delete the existing web.config
+              & robocopy $source $destination /MIR /XF web.config /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
+
+              $deployCode = $LASTEXITCODE
+
+              if ($deployCode -ge 8) {
+                  throw "Robocopy deployment failed: $deployCode"
+              }
+
+
+              # ==================================
+              # VERIFY DEPLOYMENT
+              # ==================================
+
+              if (!(Test-Path "$destination\index.html")) {
+                  throw "Deployment verification failed: index.html missing"
+              }
+
+              if (!(Test-Path "$destination\web.config")) {
+                  throw "Deployment verification failed: web.config missing"
+              }
+
+              $sourceHash = (
+                  Get-FileHash "$source\index.html" -Algorithm SHA256
+              ).Hash
+
+              $destinationHash = (
+                  Get-FileHash "$destination\index.html" -Algorithm SHA256
+              ).Hash
+
+              if ($sourceHash -ne $destinationHash) {
+                  throw "Deployment verification failed: index.html mismatch"
+              }
+
+              $webConfigHashAfter = (
+                  Get-FileHash "$destination\web.config" -Algorithm SHA256
+              ).Hash
+
+              if ($webConfigHashBefore -ne $webConfigHashAfter) {
+                  throw "Existing web.config was unexpectedly modified"
+              }
+
+
+              # ==================================
+              # SUCCESS
+              # ==================================
+
+              Write-Host "=================================="
+              Write-Host "DJTRUST DEPLOYMENT SUCCESSFUL"
+              Write-Host "=================================="
+
+              Write-Host "Commit: $env:GITHUB_COMMIT"
+              Write-Host "Destination: $destination"
+              Write-Host "Backup: $backupPath"
+
+          }
+
+          catch {
+
+              $deploymentError = $_.Exception.Message
+
+              Write-Warning "Deployment failed: $deploymentError"
+
+              Write-Warning "Restoring previous website..."
+
+
+              # ==================================
+              # AUTOMATIC ROLLBACK
+              # ==================================
+
+              & robocopy $backupPath $destination /MIR /R:2 /W:3 /COPY:DAT /DCOPY:DAT /XJ /NFL /NDL /NP
+
+              $rollbackCode = $LASTEXITCODE
+
+              if ($rollbackCode -ge 8) {
+                  throw "CRITICAL: Rollback failed. Manual recovery required. Backup: $backupPath"
+              }
+
+              if (!(Test-Path "$destination\index.html") -or
+                  !(Test-Path "$destination\web.config")) {
+                  throw "CRITICAL: Rollback verification failed. Backup: $backupPath"
+              }
+
+              $restoredHash = (
+                  Get-FileHash "$destination\index.html" -Algorithm SHA256
+              ).Hash
+
+              if ($restoredHash -ne $backupIndexHash) {
+                  throw "CRITICAL: Restored website does not match backup"
+              }
+
+              Write-Warning "Previous website successfully restored."
+
+              throw "Deployment failed. Previous website restored. Error: $deploymentError"
+          }
+
+
+      # Cleanup temporary downloaded artifact
+      - name: Cleanup temporary files
+        if: always()
+        shell: pwsh
+        run: |
+
+          $tempPath = Join-Path $env:RUNNER_TEMP "djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}"
+
+          if (Test-Path $tempPath) {
+              Remove-Item $tempPath -Recurse -Force
+              Write-Host "Temporary deployment files cleaned."
+          }
