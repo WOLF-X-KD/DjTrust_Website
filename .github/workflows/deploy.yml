@@ -1,4 +1,3 @@
-
 name: DJTrust Website - Production Deployment
 
 on:
@@ -15,13 +14,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-
   # ==========================================
   # JOB 1 - BUILD REACT FRONTEND
   # ==========================================
 
   build:
-
     name: Build React Frontend
 
     runs-on: ubuntu-latest
@@ -33,7 +30,6 @@ jobs:
         working-directory: Frontend
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -71,13 +67,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-
   # ==========================================
   # JOB 2 - DEPLOY TO CLOUDCONE IIS
   # ==========================================
 
   deploy:
-
     name: Deploy to CloudCone IIS
 
     needs: build
@@ -87,7 +81,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-
       # Download the production build
       - name: Download production artifact
         uses: actions/download-artifact@v4
@@ -95,10 +88,9 @@ jobs:
           name: djtrust-frontend
           path: ${{ runner.temp }}\djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}
 
-
       # Backup and deploy
       - name: Backup and deploy Frontend
-        shell: pwsh
+        shell: powershell
 
         env:
           GITHUB_COMMIT: ${{ github.sha }}
@@ -291,11 +283,10 @@ jobs:
               throw "Deployment failed. Previous website restored. Error: $deploymentError"
           }
 
-
       # Cleanup temporary downloaded artifact
       - name: Cleanup temporary files
         if: always()
-        shell: pwsh
+        shell: powershell
         run: |
 
           $tempPath = Join-Path $env:RUNNER_TEMP "djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}"
