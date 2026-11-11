@@ -78,6 +78,10 @@ jobs:
 
     steps:
 
+      # ======================================
+      # DOWNLOAD BUILD ARTIFACT
+      # ======================================
+
       - name: Download production artifact
         uses: actions/download-artifact@v4
         with:
@@ -200,8 +204,8 @@ jobs:
 
               Write-Host "Deploying React frontend..."
 
-              # Do not overwrite or delete IIS web.config.
-              # Do not mirror-delete existing uploads or media.
+              # Preserve IIS web.config.
+              # Do not delete existing uploads or media.
 
               Invoke-Robocopy -Arguments @(
                   $source,
@@ -270,9 +274,6 @@ jobs:
 
               Write-Warning "Starting automatic rollback..."
 
-              # Restore previous website.
-              # Exclude web.config from overwrite because it must be preserved.
-
               Invoke-Robocopy -Arguments @(
                   $backupPath,
                   $destination,
@@ -314,7 +315,7 @@ jobs:
 
 
       # ======================================
-      # CLEANUP
+      # CLEANUP TEMPORARY FILES
       # ======================================
 
       - name: Cleanup temporary files
@@ -330,5 +331,4 @@ jobs:
               Remove-Item $tempPath -Recurse -Force
 
               Write-Host "Temporary files cleaned successfully."
-
           }
