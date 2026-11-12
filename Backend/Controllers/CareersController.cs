@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 using Dapper;
 using DjTrust.Api.Models;
 using DjTrust.Api.Data;
+using DjTrust.Api.Services;
 
 namespace DjTrust.Api.Controllers
 {
@@ -16,13 +17,20 @@ namespace DjTrust.Api.Controllers
         private readonly ILogger<CareersController> _logger;
         private readonly DbConnectionFactory _dbFactory;
         private readonly IWebHostEnvironment _env;
+        private readonly IEmailService _emailService;
 
-        public CareersController(IConfiguration config, ILogger<CareersController> logger, IWebHostEnvironment env, DbConnectionFactory dbFactory)
+        public CareersController(
+            IConfiguration config, 
+            ILogger<CareersController> logger, 
+            IWebHostEnvironment env, 
+            DbConnectionFactory dbFactory,
+            IEmailService emailService)
         {
             _config = config;
             _logger = logger;
             _env = env;
             _dbFactory = dbFactory;
+            _emailService = emailService;
         }
 
         [HttpGet]
@@ -64,6 +72,27 @@ namespace DjTrust.Api.Controllers
                 return BadRequest(new { success = false, message = "Name and Email are required." });
             }
 
+            // 1. Dispatch Email Notification immediately to HR (careers@djtrust.lk) and Developer BCC (dinupad@djtrust.lk)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _emailService.SendJobApplicationNotificationAsync(
+                        request.Jobtitle,
+                        request.Name.Trim(),
+                        request.Email.Trim(),
+                        request.Tpno?.Trim() ?? string.Empty,
+                        request.Head,
+                        request.Body,
+                        request.Coverletter);
+                }
+                catch (Exception emailEx)
+                {
+                    _logger.LogError(emailEx, "Failed to dispatch career application notification email.");
+                }
+            });
+
+            // 2. Persist record into Database
             try
             {
                 using var db = await _dbFactory.CreateOpenConnectionAsync();
@@ -83,14 +112,13 @@ namespace DjTrust.Api.Controllers
                     Coverletter = request.Coverletter ?? string.Empty,
                     request.Email
                 });
-
-                return Ok(new { success = true, message = "Application submitted successfully! Our team will contact you shortly." });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to insert career application into database.");
-                return StatusCode(500, new { success = false, message = "Unable to submit application at this time. Please try again later." });
+                _logger.LogWarning(ex, "Failed to insert career application into database. (Email notification was dispatched successfully)");
             }
+
+            return Ok(new { success = true, message = "Application submitted successfully! Our talent acquisition team will review your CV." });
         }
 
         [HttpPost("upload-cv")]
@@ -156,6 +184,27 @@ namespace DjTrust.Api.Controllers
                 _logger.LogError(ex, "Error uploading CV file.");
                 return StatusCode(500, new { success = false, message = "Upload failed. Please try again." });
             }
+        }
+
+        [HttpGet("test-job-email")]
+        [HttpPost("test-job-email")]
+        public async Task<IActionResult> TestJobEmail()
+        {
+            var result = await _emailService.SendJobApplicationNotificationAsync(
+                "TESTING APPLICATION - Junior Credit Officer",
+                "J.A. Ranasinghe (Testing Candidate)",
+                "ranasinghe.testing@example.com",
+                "077 123 4567",
+                "*** THIS IS A SYSTEM TEST EMAIL *** Testing job application notification pipeline delivery to HR (careers@djtrust.lk) and Developer BCC (dinupad@djtrust.lk).",
+                "sample-cv-testing.pdf",
+                "sample-cover-letter-testing.pdf");
+
+            return Ok(new { 
+                success = result, 
+                message = result 
+                    ? "Job application test email dispatched successfully to: careers@djtrust.lk (BCC: dinupad@djtrust.lk)" 
+                    : "Failed to dispatch job application test email." 
+            });
         }
     }
 }

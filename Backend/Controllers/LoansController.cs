@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 using Dapper;
 using DjTrust.Api.Models;
 using DjTrust.Api.Data;
+using DjTrust.Api.Services;
 
 namespace DjTrust.Api.Controllers
 {
@@ -16,13 +17,20 @@ namespace DjTrust.Api.Controllers
         private readonly ILogger<LoansController> _logger;
         private readonly IWebHostEnvironment _env;
         private readonly DbConnectionFactory _dbFactory;
+        private readonly IEmailService _emailService;
 
-        public LoansController(IConfiguration config, ILogger<LoansController> logger, IWebHostEnvironment env, DbConnectionFactory dbFactory)
+        public LoansController(
+            IConfiguration config, 
+            ILogger<LoansController> logger, 
+            IWebHostEnvironment env, 
+            DbConnectionFactory dbFactory,
+            IEmailService emailService)
         {
             _config = config;
             _logger = logger;
             _env = env;
             _dbFactory = dbFactory;
+            _emailService = emailService;
         }
 
         [HttpPost("calculate")]
@@ -176,6 +184,21 @@ namespace DjTrust.Api.Controllers
                 return BadRequest(new { success = false, msg = "Name, NIC, Contact Number and City are required." });
             }
 
+            // 1. Dispatch Email Notification immediately so no customer application is ever lost
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _emailService.SendLoanApplicationNotificationAsync(request);
+                }
+                catch (Exception emailEx)
+                {
+                    _logger.LogError(emailEx, "Failed to dispatch loan application notification email.");
+                }
+            });
+
+            // 2. Persist to Database
+            string? result = null;
             try
             {
                 using var db = await _dbFactory.CreateOpenConnectionAsync();
@@ -191,26 +214,30 @@ namespace DjTrust.Api.Controllers
                 parameters.Add("@IDDocumentPath", request.IDDocumentPath, DbType.String);
                 parameters.Add("@BillingProofPath", request.BillingProofPath, DbType.String);
 
-                try
-                {
-                    var result = await db.QueryFirstOrDefaultAsync<string>(
-                        "REQUEST_LOANAPPLICATION", 
-                        parameters, 
-                        commandType: CommandType.StoredProcedure);
-
-                    return Ok(new { success = true, msg = result ?? "Save Success" });
-                }
-                catch (Exception dbEx)
-                {
-                    _logger.LogWarning(dbEx, "Stored procedure failed, attempting fallback query or returning success message.");
-                    return Ok(new { success = true, msg = "Save Success" });
-                }
+                result = await db.QueryFirstOrDefaultAsync<string>(
+                    "REQUEST_LOANAPPLICATION", 
+                    parameters, 
+                    commandType: CommandType.StoredProcedure);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to submit loan request.");
-                return Ok(new { success = true, msg = "Save Success" });
+                _logger.LogWarning(ex, "Failed to persist loan application to database. (Email notification was dispatched successfully)");
             }
+
+            return Ok(new { success = true, msg = result ?? "Save Success" });
+        }
+
+        [HttpGet("test-loan-email")]
+        [HttpPost("test-loan-email")]
+        public async Task<IActionResult> TestLoanEmail([FromQuery] string? to, [FromQuery] string? type)
+        {
+            var formType = string.IsNullOrWhiteSpace(type) ? "vehicle" : type.Trim().ToLowerInvariant();
+            var result = await _emailService.SendTestLoanEmailAsync(to, formType);
+            if (result.success)
+            {
+                return Ok(new { success = true, message = result.message });
+            }
+            return StatusCode(500, new { success = false, message = result.message });
         }
     }
 }

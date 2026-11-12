@@ -1,4 +1,5 @@
 using DjTrust.Api.Data;
+using DjTrust.Api.Services;
 using Microsoft.Data.SqlClient;
 
 // Load environment variables from .env file if present
@@ -45,6 +46,9 @@ if (!string.IsNullOrEmpty(urls))
 
 // Register DB Connection Factory with fallback host resolution
 builder.Services.AddSingleton<DbConnectionFactory>();
+
+// Register Email Notification Service
+builder.Services.AddScoped<IEmailService, EmailService>();
 
 // Add controllers with JSON options
 builder.Services.AddControllers()
