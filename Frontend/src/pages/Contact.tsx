@@ -16,6 +16,7 @@ export const Contact: React.FC = () => {
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
+    email: '',
     subject: '',
     message: ''
   });
@@ -64,6 +65,7 @@ export const Contact: React.FC = () => {
     try {
       await submitContactInquiry({
         name: formData.name,
+        email: formData.email,
         tpno: formData.phone,
         subject: formData.subject,
         message: formData.message
@@ -73,6 +75,7 @@ export const Contact: React.FC = () => {
       setFormData({
         name: '',
         phone: '',
+        email: '',
         subject: '',
         message: ''
       });
@@ -887,20 +890,35 @@ export const Contact: React.FC = () => {
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-200 uppercase tracking-wider mb-2">
-                    Subject <span className="text-rose-400">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.subject}
-                    onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
-                    placeholder="How can we help?"
-                    className={`ct-input-field ${formErrors.subject ? 'is-invalid' : ''}`}
-                  />
-                  {formErrors.subject && (
-                    <p className="text-rose-400 text-[11px] mt-1 font-semibold">Subject is required.</p>
-                  )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-200 uppercase tracking-wider mb-2">
+                      Email Address <span className="text-slate-400 text-[11px] font-normal lowercase">(optional)</span>
+                    </label>
+                    <input
+                      type="email"
+                      value={formData.email}
+                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      placeholder="name@example.com"
+                      className="ct-input-field"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-200 uppercase tracking-wider mb-2">
+                      Subject <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.subject}
+                      onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
+                      placeholder="How can we help?"
+                      className={`ct-input-field ${formErrors.subject ? 'is-invalid' : ''}`}
+                    />
+                    {formErrors.subject && (
+                      <p className="text-rose-400 text-[11px] mt-1 font-semibold">Subject is required.</p>
+                    )}
+                  </div>
                 </div>
 
                 <div>
