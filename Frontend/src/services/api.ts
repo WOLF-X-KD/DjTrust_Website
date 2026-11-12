@@ -165,6 +165,8 @@ export interface LoanApplicationPayload {
   modelname?: string;
   brandname?: string;
   vehicleno?: string;
+  condition?: string;
+  regyear?: string;
   IDDocumentPath?: string;
   BillingProofPath?: string;
 }

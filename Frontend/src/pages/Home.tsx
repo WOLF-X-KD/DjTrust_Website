@@ -10,7 +10,9 @@ export const Home: React.FC<HomeProps> = ({ onOpenLoanModal, onOpenFinanceModal 
   const scrollToBottom = () => {
     const bottomPosition = Math.max(
       document.documentElement.scrollHeight,
-      document.body.scrollHeight
+      document.body.scrollHeight,
+      document.documentElement.offsetHeight,
+      document.body.offsetHeight
     );
     window.scrollTo({
       top: bottomPosition,
@@ -23,7 +25,7 @@ export const Home: React.FC<HomeProps> = ({ onOpenLoanModal, onOpenFinanceModal 
       {/* ========================================================
           1. Hero Video Banner with Aspect Ratio & Bouncing Scroll Button
          ======================================================== */}
-      <div className="relative overflow-hidden w-full aspect-[16/9] max-h-[85vh] bg-black">
+      <div className="relative overflow-hidden w-full aspect-[16/9] max-h-[85vh] lg:aspect-auto lg:h-[calc(100vh-100px)] lg:[height:calc(100dvh-100px)] lg:max-h-none bg-black">
         <video 
           playsInline 
           autoPlay 
@@ -41,18 +43,20 @@ export const Home: React.FC<HomeProps> = ({ onOpenLoanModal, onOpenFinanceModal 
         <button 
           type="button"
           onClick={scrollToBottom}
-          className="absolute bottom-6 sm:bottom-10 left-1/2 -translate-x-1/2 text-[#003d8f] hover:text-white transition-all transform hover:scale-110 active:scale-95 z-20 flex items-center justify-center w-14 h-14 animate-bounce focus:outline-none cursor-pointer"
+          className="absolute bottom-6 sm:bottom-10 left-1/2 -translate-x-1/2 text-[#003d8f] hover:text-white transition-all transform hover:scale-110 active:scale-95 z-30 flex items-center justify-center w-14 h-14 focus:outline-none cursor-pointer pointer-events-auto"
           aria-label="Scroll to bottom"
           title="Scroll to bottom"
         >
-          <ChevronDown className="w-10 h-10 drop-shadow-[0_2px_10px_rgba(0,0,0,0.5)] stroke-[2.5]" />
+          <span className="animate-bounce flex items-center justify-center pointer-events-none">
+            <ChevronDown className="w-10 h-10 drop-shadow-[0_2px_10px_rgba(0,0,0,0.5)] stroke-[2.5]" />
+          </span>
         </button>
       </div>
 
       {/* ========================================================
           2. About Section: "95 YEARS AND BEYOND"
          ======================================================== */}
-      <section id="about-section" className="py-16 sm:py-24 bg-white relative overflow-hidden">
+      <section id="about-section" className="py-16 sm:py-24 bg-white relative overflow-hidden scroll-mt-20">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8" data-aos="fade-up">
           <div className="text-center">
             <h4 className="text-sm sm:text-base md:text-[30px] font-normal text-[#777777] uppercase tracking-[0.2em] mb-2 sm:mb-3">
