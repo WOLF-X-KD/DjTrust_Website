@@ -253,6 +253,8 @@ export const LoanModal: React.FC<LoanModalProps> = ({ isOpen, onClose }) => {
         model: formData.model,
         modelname: formData.modelname || formData.model,
         vehicleno: vehicleIdentifier,
+        condition: formData.condition,
+        regyear: formData.regyear,
         loanamount: 0,
         noof: 0
       };
