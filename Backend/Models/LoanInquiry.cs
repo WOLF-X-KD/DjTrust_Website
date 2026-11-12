@@ -36,6 +36,8 @@ namespace DjTrust.Api.Models
         public string? Modelname { get; set; } = "N/A";
         public string? Brandname { get; set; } = "N/A";
         public string? Vehicleno { get; set; } = "Loan Application";
+        public string? Condition { get; set; } = "-";
+        public string? RegYear { get; set; } = "-";
         public string? IDDocumentPath { get; set; }
         public string? BillingProofPath { get; set; }
     }
