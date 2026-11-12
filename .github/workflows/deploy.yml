@@ -19,7 +19,7 @@ jobs:
   # JOB 1 - BUILD REACT FRONTEND
   # ==========================================
 
-  build:
+  build-frontend:
     name: Build React Frontend
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
 
-          echo "Production build verified."
+          echo "Production frontend build verified."
 
       - name: Upload production artifact
         uses: actions/upload-artifact@v4
@@ -66,12 +66,53 @@ jobs:
           retention-days: 7
 
   # ==========================================
-  # JOB 2 - DEPLOY TO CLOUDCONE IIS
+  # JOB 2 - BUILD .NET BACKEND
+  # ==========================================
+
+  build-backend:
+    name: Build .NET Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore Backend/DjTrust.Api.csproj
+
+      - name: Publish .NET Backend
+        run: dotnet publish Backend/DjTrust.Api.csproj -c Release -o Backend/publish
+
+      - name: Verify production backend build
+        run: |
+          if [ ! -f "Backend/publish/DjTrust.Api.dll" ]; then
+            echo "::error::Production DjTrust.Api.dll missing"
+            exit 1
+          fi
+
+          echo "Production backend build verified."
+
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: djtrust-backend
+          path: Backend/publish/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ==========================================
+  # JOB 3 - DEPLOY TO CLOUDCONE IIS
   # ==========================================
 
   deploy:
     name: Deploy to CloudCone IIS
-    needs: build
+    needs: [build-frontend, build-backend]
 
     runs-on: [self-hosted, Windows, X64, iis-deploy]
     timeout-minutes: 30
@@ -79,20 +120,26 @@ jobs:
     steps:
 
       # ======================================
-      # DOWNLOAD BUILD ARTIFACT
+      # DOWNLOAD BUILD ARTIFACTS
       # ======================================
 
-      - name: Download production artifact
+      - name: Download Frontend artifact
         uses: actions/download-artifact@v4
         with:
           name: djtrust-frontend
-          path: ${{ runner.temp }}\djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\djtrust-frontend-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Download Backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: djtrust-backend
+          path: ${{ runner.temp }}\djtrust-backend-${{ github.run_id }}-${{ github.run_attempt }}
 
       # ======================================
-      # BACKUP AND DEPLOY
+      # BACKUP AND DEPLOY FRONTEND & BACKEND
       # ======================================
 
-      - name: Backup and deploy Frontend
+      - name: Deploy Frontend and Backend to IIS
         shell: powershell
 
         env:
@@ -108,14 +155,18 @@ jobs:
           # CONFIGURATION
           # ==================================
 
-          $source = Join-Path $env:RUNNER_TEMP "djtrust-production-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $frontendSource = Join-Path $env:RUNNER_TEMP "djtrust-frontend-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $backendSource  = Join-Path $env:RUNNER_TEMP "djtrust-backend-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
 
-          $destination = "C:\inetpub\wwwroot\DJTrustwebsit\Frontend"
+          $frontendDest = "C:\inetpub\wwwroot\DJTrustwebsit\Frontend"
+          $backendDest  = "C:\inetpub\wwwroot\DJTrustwebsit\Backend"
 
           $backupRoot = "C:\DeploymentBackups\DJTrustWebsite"
-
           $backupPath = Join-Path $backupRoot "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $frontendBackup = Join-Path $backupPath "Frontend"
+          $backendBackup  = Join-Path $backupPath "Backend"
 
+          $appOfflinePath = Join-Path $backendDest "app_offline.htm"
 
           # ==================================
           # ROBOCOPY HELPER
@@ -144,181 +195,222 @@ jobs:
 
 
           # ==================================
-          # VALIDATE
+          # VALIDATE SOURCES & DIRECTORIES
           # ==================================
 
-          Write-Host "Checking production build..."
+          Write-Host "Validating production build artifacts..."
 
-          if (!(Test-Path "$source\index.html")) {
-              throw "Production index.html missing"
+          if (!(Test-Path "$frontendSource\index.html")) {
+              throw "Frontend artifact missing index.html"
           }
 
-          if (!(Test-Path $destination -PathType Container)) {
-              throw "IIS Frontend directory missing"
+          if (!(Test-Path "$backendSource\DjTrust.Api.dll")) {
+              throw "Backend artifact missing DjTrust.Api.dll"
           }
 
-          if (!(Test-Path "$destination\index.html")) {
-              throw "Existing production index.html missing"
+          # Ensure destination directories exist on IIS
+          if (!(Test-Path $frontendDest -PathType Container)) {
+              New-Item -ItemType Directory -Force -Path $frontendDest | Out-Null
           }
 
-          if (!(Test-Path "$destination\web.config")) {
-              throw "Existing IIS web.config missing"
+          if (!(Test-Path $backendDest -PathType Container)) {
+              New-Item -ItemType Directory -Force -Path $backendDest | Out-Null
           }
 
-
-          # ==================================
-          # CREATE BACKUP
-          # ==================================
-
-          Write-Host "Creating production backup..."
-
+          # Prepare backup folders
           New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
-
           New-Item -ItemType Directory -Force -Path $backupPath | Out-Null
-
-          Invoke-Robocopy -Arguments @(
-              $destination,
-              $backupPath,
-              "/E",
-              "/R:2",
-              "/W:3",
-              "/COPY:DAT",
-              "/DCOPY:DAT",
-              "/XJ",
-              "/NP"
-          ) -Operation "Backup"
-
-          if (!(Test-Path "$backupPath\index.html") -or
-              !(Test-Path "$backupPath\web.config")) {
-              throw "Backup verification failed"
-          }
-
-          $backupIndexHash = (Get-FileHash "$backupPath\index.html" -Algorithm SHA256).Hash
-
-          $backupConfigHash = (Get-FileHash "$backupPath\web.config" -Algorithm SHA256).Hash
-
-          Write-Host "Backup verified: $backupPath"
+          New-Item -ItemType Directory -Force -Path $frontendBackup | Out-Null
+          New-Item -ItemType Directory -Force -Path $backendBackup | Out-Null
 
 
           # ==================================
-          # DEPLOYMENT
+          # 1. FRONTEND BACKUP & DEPLOYMENT
           # ==================================
 
           try {
-
-              Write-Host "Deploying React frontend..."
-
-              # Preserve IIS web.config.
-              # Do not delete existing uploads or media.
-
-              Invoke-Robocopy -Arguments @(
-                  $source,
-                  $destination,
-                  "/E",
-                  "/XF",
-                  "web.config",
-                  "/R:2",
-                  "/W:3",
-                  "/COPY:DAT",
-                  "/DCOPY:DAT",
-                  "/XJ",
-                  "/NP"
-              ) -Operation "Frontend deployment"
-
-
-              # ==================================
-              # VERIFY DEPLOYMENT
-              # ==================================
-
-              Write-Host "Verifying deployment..."
-
-              if (!(Test-Path "$destination\index.html")) {
-                  throw "Deployment failed: index.html missing"
-              }
-
-              if (!(Test-Path "$destination\web.config")) {
-                  throw "Deployment failed: web.config missing"
-              }
-
-              $sourceHash = (Get-FileHash "$source\index.html" -Algorithm SHA256).Hash
-
-              $destinationHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
-
-              if ($sourceHash -ne $destinationHash) {
-                  throw "Deployment failed: index.html hash mismatch"
-              }
-
-              $configHashAfter = (Get-FileHash "$destination\web.config" -Algorithm SHA256).Hash
-
-              if ($backupConfigHash -ne $configHashAfter) {
-                  throw "IIS web.config was unexpectedly modified"
-              }
-
-
-              # ==================================
-              # SUCCESS
-              # ==================================
-
               Write-Host ""
               Write-Host "===================================="
-              Write-Host "DJTRUST DEPLOYMENT SUCCESSFUL"
+              Write-Host "STARTING FRONTEND DEPLOYMENT"
               Write-Host "===================================="
 
-              Write-Host "Commit: $env:GITHUB_COMMIT"
-              Write-Host "Destination: $destination"
-              Write-Host "Backup: $backupPath"
+              if (Test-Path "$frontendDest\index.html") {
+                  Write-Host "Creating Frontend backup..."
+                  Invoke-Robocopy -Arguments @(
+                      $frontendDest,
+                      $frontendBackup,
+                      "/E",
+                      "/R:2",
+                      "/W:3",
+                      "/COPY:DAT",
+                      "/DCOPY:DAT",
+                      "/XJ",
+                      "/NP"
+                  ) -Operation "Frontend Backup"
 
-              $global:LASTEXITCODE = 0
-              exit 0
+                  Write-Host "Frontend backup verified: $frontendBackup"
+              }
 
-          }
-
-          catch {
-
-              $deploymentError = $_.Exception.Message
-
-              Write-Warning "Deployment failed: $deploymentError"
-
-              Write-Warning "Starting automatic rollback..."
-
+              Write-Host "Deploying React frontend..."
+              # Preserve IIS web.config. Do not delete existing uploads or media.
               Invoke-Robocopy -Arguments @(
-                  $backupPath,
-                  $destination,
+                  $frontendSource,
+                  $frontendDest,
                   "/E",
-                  "/PURGE",
-                  "/XF",
-                  "web.config",
+                  "/XF", "web.config",
                   "/R:2",
                   "/W:3",
                   "/COPY:DAT",
                   "/DCOPY:DAT",
                   "/XJ",
                   "/NP"
-              ) -Operation "Rollback"
+              ) -Operation "Frontend Deployment"
 
-              # Verify restored website.
-
-              if (!(Test-Path "$destination\index.html") -or
-                  !(Test-Path "$destination\web.config")) {
-                  throw "CRITICAL: Rollback verification failed. Backup: $backupPath"
+              Write-Host "Verifying frontend deployment..."
+              if (!(Test-Path "$frontendDest\index.html")) {
+                  throw "Frontend deployment failed: index.html missing"
               }
 
-              $restoredIndexHash = (Get-FileHash "$destination\index.html" -Algorithm SHA256).Hash
-
-              $restoredConfigHash = (Get-FileHash "$destination\web.config" -Algorithm SHA256).Hash
-
-              if ($restoredIndexHash -ne $backupIndexHash) {
-                  throw "CRITICAL: Restored index.html does not match backup"
+              $srcFrontHash = (Get-FileHash "$frontendSource\index.html" -Algorithm SHA256).Hash
+              $dstFrontHash = (Get-FileHash "$frontendDest\index.html" -Algorithm SHA256).Hash
+              if ($srcFrontHash -ne $dstFrontHash) {
+                  throw "Frontend deployment failed: index.html hash mismatch"
               }
 
-              if ($restoredConfigHash -ne $backupConfigHash) {
-                  throw "CRITICAL: Restored web.config does not match backup"
-              }
-
-              Write-Warning "Previous website successfully restored."
-
-              throw "Deployment failed. Previous website restored. Error: $deploymentError"
+              Write-Host "Frontend deployed and verified successfully."
           }
+          catch {
+              $frontendError = $_.Exception.Message
+              Write-Warning "Frontend deployment error: $frontendError"
+
+              if (Test-Path "$frontendBackup\index.html") {
+                  Write-Warning "Rolling back Frontend from backup..."
+                  Invoke-Robocopy -Arguments @(
+                      $frontendBackup,
+                      $frontendDest,
+                      "/E",
+                      "/PURGE",
+                      "/XF", "web.config",
+                      "/R:2", "/W:3",
+                      "/COPY:DAT", "/DCOPY:DAT",
+                      "/XJ", "/NP"
+                  ) -Operation "Frontend Rollback"
+              }
+
+              throw "Frontend deployment failed. Error: $frontendError"
+          }
+
+
+          # ==================================
+          # 2. BACKEND BACKUP & DEPLOYMENT
+          # ==================================
+
+          try {
+              Write-Host ""
+              Write-Host "===================================="
+              Write-Host "STARTING BACKEND DEPLOYMENT"
+              Write-Host "===================================="
+
+              if (Test-Path "$backendDest\DjTrust.Api.dll") {
+                  Write-Host "Creating Backend backup..."
+                  # Exclude Uploads and logs so customer files and logs are not unnecessarily duplicated
+                  Invoke-Robocopy -Arguments @(
+                      $backendDest,
+                      $backendBackup,
+                      "/E",
+                      "/XD", "Uploads", "logs",
+                      "/R:2",
+                      "/W:3",
+                      "/COPY:DAT",
+                      "/DCOPY:DAT",
+                      "/XJ",
+                      "/NP"
+                  ) -Operation "Backend Backup"
+
+                  Write-Host "Backend backup verified: $backendBackup"
+              }
+
+              # Gracefully take backend offline to release DLL file locks in IIS
+              Write-Host "Placing app_offline.htm to release IIS DLL locks..."
+              Set-Content -Path $appOfflinePath -Value '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="5"><title>Site Updating</title><style>body{font-family:sans-serif;text-align:center;padding:50px;background:#f8fafc;color:#334155;}h2{color:#003d8f;}</style></head><body><h2>D.J. Trust API Maintenance</h2><p>Application update is in progress. Please wait a moment...</p></body></html>'
+              Start-Sleep -Seconds 3
+
+              Write-Host "Deploying .NET Backend API..."
+              # Preserve Uploads, logs, server environment files (.env, appsettings.Production.json)
+              Invoke-Robocopy -Arguments @(
+                  $backendSource,
+                  $backendDest,
+                  "/E",
+                  "/XF", "app_offline.htm", "appsettings.Production.json", ".env",
+                  "/XD", "Uploads", "logs",
+                  "/R:3",
+                  "/W:3",
+                  "/COPY:DAT",
+                  "/DCOPY:DAT",
+                  "/XJ",
+                  "/NP"
+              ) -Operation "Backend Deployment"
+
+              Write-Host "Verifying backend deployment..."
+              if (!(Test-Path "$backendDest\DjTrust.Api.dll")) {
+                  throw "Backend deployment failed: DjTrust.Api.dll missing"
+              }
+              if (!(Test-Path "$backendDest\web.config")) {
+                  throw "Backend deployment failed: web.config missing"
+              }
+
+              $srcDllHash = (Get-FileHash "$backendSource\DjTrust.Api.dll" -Algorithm SHA256).Hash
+              $dstDllHash = (Get-FileHash "$backendDest\DjTrust.Api.dll" -Algorithm SHA256).Hash
+              if ($srcDllHash -ne $dstDllHash) {
+                  throw "Backend deployment failed: DjTrust.Api.dll hash mismatch"
+              }
+
+              Write-Host "Backend deployed and verified successfully."
+          }
+          catch {
+              $backendError = $_.Exception.Message
+              Write-Warning "Backend deployment error: $backendError"
+
+              if (Test-Path "$backendBackup\DjTrust.Api.dll") {
+                  Write-Warning "Rolling back Backend from backup..."
+                  Invoke-Robocopy -Arguments @(
+                      $backendBackup,
+                      $backendDest,
+                      "/E",
+                      "/XF", "app_offline.htm", "appsettings.Production.json", ".env",
+                      "/XD", "Uploads", "logs",
+                      "/R:2", "/W:3",
+                      "/COPY:DAT", "/DCOPY:DAT",
+                      "/XJ", "/NP"
+                  ) -Operation "Backend Rollback"
+              }
+
+              throw "Backend deployment failed. Error: $backendError"
+          }
+          finally {
+              # ALWAYS ensure app_offline.htm is removed so the site is never left in maintenance mode
+              if (Test-Path $appOfflinePath) {
+                  Remove-Item $appOfflinePath -Force -ErrorAction SilentlyContinue
+                  Write-Host "app_offline.htm removed. Backend is now online."
+              }
+          }
+
+
+          # ==================================
+          # SUCCESS
+          # ==================================
+
+          Write-Host ""
+          Write-Host "===================================="
+          Write-Host "DJTRUST FULL DEPLOYMENT SUCCESSFUL"
+          Write-Host "===================================="
+          Write-Host "Commit:          $env:GITHUB_COMMIT"
+          Write-Host "Frontend Path:   $frontendDest"
+          Write-Host "Backend Path:    $backendDest"
+          Write-Host "Backup Path:     $backupPath"
+
+          $global:LASTEXITCODE = 0
+          exit 0
 
 
       # ======================================
@@ -331,11 +423,15 @@ jobs:
 
         run: |
 
-          $tempPath = Join-Path $env:RUNNER_TEMP "djtrust-production-${{ github.run_id }}-${{ github.run_attempt }}"
+          $tempFrontend = Join-Path $env:RUNNER_TEMP "djtrust-frontend-${{ github.run_id }}-${{ github.run_attempt }}"
+          $tempBackend  = Join-Path $env:RUNNER_TEMP "djtrust-backend-${{ github.run_id }}-${{ github.run_attempt }}"
 
-          if (Test-Path $tempPath) {
-
-              Remove-Item $tempPath -Recurse -Force
-
-              Write-Host "Temporary files cleaned successfully."
+          if (Test-Path $tempFrontend) {
+              Remove-Item $tempFrontend -Recurse -Force -ErrorAction SilentlyContinue
           }
+
+          if (Test-Path $tempBackend) {
+              Remove-Item $tempBackend -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Temporary deployment files cleaned successfully."
